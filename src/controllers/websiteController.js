@@ -7,7 +7,7 @@ export const getMyRatedFeatures = async (req, res) => {
     if (!userId) return res.status(401).json({ message: 'Chưa xác thực người dùng' });
 
     const ratedFeatures = await websiteService.getUserRatedFeatures(userId);
-    return res.status(200).json({ ratedFeatures });
+    return res.status(200).json({ message: "Successful", data: ratedFeatures });
   } catch (error) {
     return res.status(500).json({ message: 'Lỗi lấy danh sách rated features', error: error.message });
   }
