@@ -13,8 +13,6 @@ export const handleChatStep = async (req, res) => {
     if (!userResponse || !userResponse.trim()) {
       return res.status(400).json({ success: false, message: 'Phản hồi không được để trống.' });
     }
-  
-    console.log('Received chat step request:', { question, targetBand, history, userResponse });
 
     const result = await speakingService.processChatStep({
       question,
@@ -22,8 +20,6 @@ export const handleChatStep = async (req, res) => {
       history: history || [],
       userResponse,
     });
-
-    console.log('Processed chat step result:', result);
 
     return res.status(200).json({
       success: true,
@@ -41,7 +37,7 @@ export const handleChatStep = async (req, res) => {
  */
 export const handleGetCollocations = async (req, res) => {
   try {
-    const { vietnamesePhrase, currentQuestion } = req.body;
+    const { vietnamesePhrase, currentQuestion, targetBand } = req.body;
 
     if (!vietnamesePhrase || !vietnamesePhrase.trim()) {
       return res.status(400).json({ success: false, message: 'Vui lòng nhập cụm từ tiếng Việt.' });
@@ -50,6 +46,7 @@ export const handleGetCollocations = async (req, res) => {
     const collocations = await speakingService.generateCollocations({
       vietnamesePhrase,
       currentQuestion,
+      targetBand,
     });
 
     return res.status(200).json({
@@ -90,20 +87,25 @@ export const handleGetHints = async (req, res) => {
 
 /**
  * POST /api/speaking/evaluate
- * Body: { question, targetBand, fullTranscript }
+ * Body: { question, targetBand, fullTranscript, audio, mimeType }
  */
 export const handleEvaluateSession = async (req, res) => {
   try {
-    const { question, targetBand, fullTranscript } = req.body;
+    const { question, targetBand, fullTranscript, audio, mimeType } = req.body;
 
-    if (!fullTranscript || !Array.isArray(fullTranscript) || fullTranscript.length === 0) {
+    if (!fullTranscript || fullTranscript.length === 0) {
       return res.status(400).json({ success: false, message: 'Dữ liệu bài nói không hợp lệ.' });
     }
 
-    const evaluation = await speakingService.evaluateSession({
+    const audioBuffer = req.file ? req.file.buffer : null;
+    const finalMimeType = req.file ? req.file.mimetype : mimeType;
+
+    const evaluation = await speakingService.evaluateSpeakingSession({
       question,
       targetBand,
       fullTranscript,
+      audioBuffer,
+      finalMimeType,
     });
 
     return res.status(200).json({
@@ -113,44 +115,6 @@ export const handleEvaluateSession = async (req, res) => {
   } catch (error) {
     console.error('Error in handleEvaluateSession:', error);
     return res.status(500).json({ success: false, message: 'Lỗi khi chấm điểm bài nói.' });
-  }
-};
-
-/**
- * POST /api/speaking/evaluate-audio
- * Body: { question, targetBand, history, audio (file) }
- */
-
-export const handleEvaluateAudio = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'Audio file is required.' });
-    }
-
-    const { question, targetBand, history } = req.body;
-    
-    // Parse history nếu được gửi dưới dạng chuỗi JSON String trong FormData
-    const parsedHistory = typeof history === 'string' ? JSON.parse(history) : history;
-
-    const evaluationResult = await speakingService.evaluateAudioSession({
-      audioBuffer: req.file.buffer,
-      mimeType: req.file.mimetype,
-      question,
-      targetBand,
-      history: parsedHistory,
-    });
-
-    return res.status(200).json({
-      success: true,
-      data: evaluationResult,
-    });
-  } catch (error) {
-    console.error('Error in handleEvaluateAudio:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to process audio evaluation.',
-      error: error.message,
-    });
   }
 };
 

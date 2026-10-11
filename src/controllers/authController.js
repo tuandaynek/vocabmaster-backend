@@ -4,8 +4,8 @@ import crypto from 'crypto'
 import { supabase } from '../lib/supabase.js'
 
 // JWT accept string format like "15m", "30m"
-const ACCESS_TOKEN_TTL = "30m"; 
-const REFRESH_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 ngày (MilliSeconds)
+const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || "30m"; 
+const REFRESH_TOKEN_TTL_MS = parseInt(process.env.REFRESH_TOKEN_TTL_MS) || (14 * 24 * 60 * 60 * 1000);
 
 export const signUp = async (req, res) => {
     try {

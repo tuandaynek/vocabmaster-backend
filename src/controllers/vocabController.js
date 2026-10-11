@@ -1,5 +1,5 @@
 import {
-  extractVocabWithGemini,
+  extractVocabWithAI,
   saveVocabularyList,
   reviewVocabularyEntry,
   fetchUserVocabularyList,
@@ -51,7 +51,7 @@ export const extractVocabTest = async (req, res) => {
   }
 
   try {
-    const data = await extractVocabWithGemini({
+    const data = await extractVocabWithAI({
       passage,
       limit,
       focusMode,
@@ -85,7 +85,7 @@ export const extractVocab = async (req, res) => {
   }
 
   try {
-    const data = await extractVocabWithGemini({
+    const data = await extractVocabWithAI({
       passage,
       limit,
       focusMode,
@@ -217,8 +217,6 @@ export const getUserVocabularyList = async (req, res) => {
 export const deleteUserVocabulary = async (req, res) => {
   const vocabId = req.params?.id ?? null;
   const userId = getUserIdFromReq(req);
-
-  console.log('-> Backend xoá user vocab:', { vocabId, userId });
 
   try {
     if (!vocabId) {

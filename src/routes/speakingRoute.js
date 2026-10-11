@@ -4,8 +4,7 @@ import {
   handleGetCollocations,
   handleGetHints,
   handleEvaluateSession,
-  handleEvaluateAudio
-  ,handleSaveSpeakingHistory
+  handleSaveSpeakingHistory
 } from '../controllers/speakingController.js';
 import multer from 'multer';
 import { requireAuth } from '../middlewares/verifyToken.js';
@@ -20,8 +19,7 @@ const upload = multer({
 router.post('/chat-step', handleChatStep);
 router.post('/collocations', handleGetCollocations);
 router.post('/hints', handleGetHints);
-router.post('/evaluate', handleEvaluateSession);
-router.post('/evaluate-audio', upload.single('audio'), handleEvaluateAudio);
+router.post('/evaluate', upload.single('audio'), handleEvaluateSession);
 router.post('/history', requireAuth, handleSaveSpeakingHistory);
 
 export default router;

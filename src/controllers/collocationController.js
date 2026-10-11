@@ -8,7 +8,11 @@ import {
   reviewCollocationEntry,
   saveCollocationsList,
   getCollocationVariationsService,
-  completePhase3Service
+  completeReviewService,
+  // Import thêm 3 hàm service cho 3 Phase
+  getPhase1TranslationService,
+  evaluatePhase2CollocationService,
+  evaluatePhase3CollocationService,
 } from "../services/collocationService.js";
 
 const getUserIdFromReq = (req) => {
@@ -225,7 +229,6 @@ export const getCollocationVariations = async (req, res) => {
       });
     }
 
-    // Gọi hoàn toàn xuống Service
     const result = await getCollocationVariationsService(collocationId, userId);
 
     return res.status(200).json({
@@ -241,13 +244,11 @@ export const getCollocationVariations = async (req, res) => {
   }
 };
 
-export const completePhase3 = async (req, res) => {
+export const completeReview = async (req, res) => {
   try {
     const { collocationId } = req.params;
     const userId = getUserIdFromReq(req);
-    const { rating } = req.body; // Có thể nhận rating từ client ("good", "easy", v.v.)
-
-    console.log(collocationId, userId, rating)
+    const { rating } = req.body;
 
     if (!collocationId) {
       return res.status(400).json({
@@ -256,7 +257,7 @@ export const completePhase3 = async (req, res) => {
       });
     }
 
-    const result = await completePhase3Service({
+    const result = await completeReviewService({
       collocationId,
       userId,
       rating: rating || "good",
@@ -272,6 +273,97 @@ export const completePhase3 = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Server error khi lưu kết quả Phase 3",
+    });
+  }
+};
+
+// ==================== 3 ACTIVE PHASES CONTROLLERS ====================
+
+export const getPhase1Translation = async (req, res) => {
+  try {
+    const collocationId = req.params?.collocationId || req.query?.collocationId;
+    const userId = getUserIdFromReq(req);
+
+    if (!collocationId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu collocationId!",
+      });
+    }
+
+    const result = await getPhase1TranslationService({ collocationId, userId });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in getPhase1Translation controller:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to load Phase 1 translation data",
+    });
+  }
+};
+
+export const evaluatePhase2Collocation = async (req, res) => {
+  try {
+    const { collocationId, userSentence } = req.body;
+    const userId = getUserIdFromReq(req);
+
+    if (!collocationId || !userSentence) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu collocationId hoặc câu tiếng Anh (userSentence)!",
+      });
+    }
+
+    const result = await evaluatePhase2CollocationService({
+      collocationId,
+      userSentence,
+      userId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in evaluatePhase2Collocation controller:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to evaluate Phase 2 sentence",
+    });
+  }
+};
+
+export const evaluatePhase3Collocation = async (req, res) => {
+  try {
+    const { collocationId, userStory } = req.body;
+    const userId = getUserIdFromReq(req);
+
+    if (!collocationId || !userStory) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu collocationId hoặc đoạn văn (userStory)!",
+      });
+    }
+
+    const result = await evaluatePhase3CollocationService({
+      collocationId,
+      userStory,
+      userId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in evaluatePhase3Collocation controller:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to evaluate Phase 3 story",
     });
   }
 };

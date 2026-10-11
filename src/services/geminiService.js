@@ -47,17 +47,27 @@ const errorMessage = (error) =>
   error instanceof Error ? error.message : String(error?.message || error);
 
 // Phân loại lỗi Rate Limit / Tải cao để Retry
-const isRetryableError = (error) => {
+// Hàm 1: Chỉ kiểm tra lỗi Quota / Rate Limit thực sự (429) -> Cần cập nhật DB
+const isQuotaExceededError = (error) => {
   const status = error?.status || error?.statusCode || error?.response?.status;
   const message = errorMessage(error).toLowerCase();
   return (
     status === 429 ||
-    status === 503 ||
     message.includes("429") ||
     message.includes("quota exceeded") ||
-    message.includes("resource exhausted") ||
+    message.includes("resource_exhausted")
+  );
+};
+
+// Hàm 2: Chỉ kiểm tra lỗi Tải cao / Máy chủ Google bận (503) -> KHÔNG cập nhật DB
+const isServerBusyError = (error) => {
+  const status = error?.status || error?.statusCode || error?.response?.status;
+  const message = errorMessage(error).toLowerCase();
+  return (
+    status === 503 ||
     message.includes("503") ||
-    message.includes("service unavailable")
+    message.includes("service unavailable") ||
+    message.includes("high demand")
   );
 };
 
@@ -79,22 +89,24 @@ const refreshQuotaState = (state) => {
   const now = new Date();
   const updatedMinute = new Date(state.updated_minute_at);
   const updatedDay = new Date(state.updated_day_at);
+
   let minuteCount = state.minute_count;
   let dayCount = state.day_count;
   let updatedMinuteAt = state.updated_minute_at;
   let updatedDayAt = state.updated_day_at;
 
-  if (now - updatedMinute >= MINUTE_WINDOW_MS) {
+  // 1. Reset Phút nếu trôi qua > 80 giây
+  if (now.getTime() - updatedMinute.getTime() >= MINUTE_WINDOW_MS) {
     minuteCount = 0;
     updatedMinuteAt = now.toISOString();
   }
 
-  if (
-    now - updatedDay >= DAY_WINDOW_MS ||
-    now.getUTCDate() !== updatedDay.getUTCDate() ||
-    now.getUTCMonth() !== updatedDay.getUTCMonth() ||
-    now.getUTCFullYear() !== updatedDay.getUTCFullYear()
-  ) {
+  // 2. Reset Ngày nếu đã qua ngày mới theo giờ địa phương (Việt Nam GMT+7)
+  const isDifferentDay =
+    now.toLocaleDateString("vi-VN") !== updatedDay.toLocaleDateString("vi-VN");
+  const isOver24Hours = now.getTime() - updatedDay.getTime() >= DAY_WINDOW_MS;
+
+  if (isDifferentDay || isOver24Hours) {
     dayCount = 0;
     updatedDayAt = now.toISOString();
   }
@@ -110,7 +122,9 @@ const refreshQuotaState = (state) => {
 
 const getAvailableApiKey = async (modelName, excludedIndices, apiKeys) => {
   if (!apiKeys.length) {
-    throw new Error("Không tìm thấy GEMINI_API_KEYS hoặc GEMINI_API_KEY trong .env");
+    throw new Error(
+      "Không tìm thấy GEMINI_API_KEYS hoặc GEMINI_API_KEY trong .env",
+    );
   }
 
   const { data: states, error } = await supabase
@@ -122,7 +136,9 @@ const getAvailableApiKey = async (modelName, excludedIndices, apiKeys) => {
     throw new Error(`Không thể đọc trạng thái API key: ${error.message}`);
   }
 
-  const stateMap = new Map((states || []).map((state) => [state.key_index, state]));
+  const stateMap = new Map(
+    (states || []).map((state) => [state.key_index, state]),
+  );
   const now = new Date().toISOString();
   const { rpm, rpd } = getLimits();
 
@@ -163,11 +179,14 @@ const upsertKeyState = async (state) => {
 };
 
 const recordKeyUsage = async (keyInfo, modelName) => {
+  const nextMinute = keyInfo.state.minute_count + 1;
+  const nextDay = keyInfo.state.day_count + 1;
+
   await upsertKeyState({
     key_index: keyInfo.keyIndex,
     model_name: modelName,
-    minute_count: keyInfo.state.minute_count + 1,
-    day_count: keyInfo.state.day_count + 1,
+    minute_count: nextMinute,
+    day_count: nextDay,
     updated_minute_at: keyInfo.state.updated_minute_at,
     updated_day_at: keyInfo.state.updated_day_at,
     is_blocked: false,
@@ -175,12 +194,12 @@ const recordKeyUsage = async (keyInfo, modelName) => {
 };
 
 const markKeyQuotaExceeded = async (keyInfo, modelName) => {
-  const { rpm, rpd } = getLimits();
+  const { rpm, rpd } = getLimits(); // rpd = 14
   await upsertKeyState({
     key_index: keyInfo.keyIndex,
     model_name: modelName,
     minute_count: rpm,
-    day_count: rpd,
+    day_count: Math.max(keyInfo.state.day_count, rpd), // Giữ tối đa là 14
     updated_minute_at: keyInfo.state.updated_minute_at,
     updated_day_at: keyInfo.state.updated_day_at,
     is_blocked: false,
@@ -282,7 +301,7 @@ export const generateGeminiContent = async ({
       keyInfo = await getAvailableApiKey(
         normalizedModelName,
         excludedIndices,
-        apiKeys
+        apiKeys,
       );
     } catch (error) {
       const exhausted =
@@ -319,6 +338,7 @@ export const generateGeminiContent = async ({
 
       const rawResponse = result?.response ?? result;
       const text = rawResponse?.text?.() ?? "";
+      console.log(text);
       return buildResponse({
         success: true,
         modelName: normalizedModelName,
@@ -331,18 +351,32 @@ export const generateGeminiContent = async ({
     } catch (error) {
       attempts += 1;
       excludedIndices.add(keyInfo.keyIndex);
+      lastRetryableError = error;
 
-      // Trầm trọng 1: Key bị khóa / Invalid -> Đánh dấu is_blocked = true
+      // Trường hợp 1: Key bị khóa / Invalid API Key -> Block vĩnh viễn
       if (isKeyBlockedError(error)) {
-        console.warn(`🔒 Key #${keyInfo.keyIndex} bị khóa hoặc invalid. Đang block vĩnh viễn...`);
+        console.warn(
+          `🔒 Key #${keyInfo.keyIndex} bị khóa hoặc invalid. Đang block vĩnh viễn...`,
+        );
         await markKeyBlocked(keyInfo, normalizedModelName);
         continue;
       }
 
-      // Trầm trọng 2: Lỗi 429/503 -> Đánh dấu kịch trần Quota & Chuyển Key
-      if (isRetryableError(error)) {
-        lastRetryableError = error;
+      // Trường hợp 2: Lỗi Quota (429) -> Mới đánh dấu Quota Exceeded vào DB
+      if (isQuotaExceededError(error)) {
+        console.warn(
+          `⚠️ Key #${keyInfo.keyIndex} đã kịch Quota (429). Đang đánh dấu DB...`,
+        );
         await markKeyQuotaExceeded(keyInfo, normalizedModelName);
+        continue;
+      }
+
+      // Trường hợp 3: Máy chủ Google quá tải (503) -> Chuyển Key/Retry ngay, KHÔNG đụng vào DB Quota
+      if (isServerBusyError(error)) {
+        console.warn(
+          `⏳ Key #${keyInfo.keyIndex} gặp lỗi Google bận (503). Đang đổi key khác thử lại...`,
+        );
+        await sleep(500); // Nghỉ 0.5s rồi xoay Key
         continue;
       }
 

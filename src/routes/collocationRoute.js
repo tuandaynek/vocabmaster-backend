@@ -10,7 +10,10 @@ import {
   reviewCollocation,
   saveCollocationsSelection,
   getCollocationVariations,
-  completePhase3
+  getPhase1Translation,
+  completeReview,
+  evaluatePhase2Collocation,
+  evaluatePhase3Collocation
 } from "../controllers/collocationController.js";
 import { requireAuth } from "../middlewares/verifyToken.js";
 
@@ -25,7 +28,13 @@ router.get("/due-cards", requireAuth, getDueCollocations);
 router.post("/review", requireAuth, reviewCollocation);
 router.get("/next-review", requireAuth, getNextCollocationHandler);
 router.get("/review/:collocationId", requireAuth, getCollocationReview);
+
 router.get("/review/:collocationId/variations", requireAuth, getCollocationVariations);
-router.post("/review/:collocationId/complete-phase3", requireAuth, completePhase3);
+
+router.get("/review/:collocationId/phase1", requireAuth, getPhase1Translation);
+router.post("/review/evaluate-phase2", requireAuth, evaluatePhase2Collocation);
+router.post("/review/evaluate-phase3", requireAuth, evaluatePhase3Collocation);
+
+router.post("/review/:collocationId/complete", requireAuth, completeReview);
 
 export default router;

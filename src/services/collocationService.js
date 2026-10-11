@@ -1,8 +1,9 @@
 import { supabase } from "../lib/supabase.js";
 import { ensureAudioUrl } from "./audioService.js";
 import { buildSrsUpdatePayload, calculateNextReview } from "../utils/srs.js";
+import { callGroqWithFallback } from "../lib/groq.js";
 import { generateGeminiContent } from "./geminiService.js";
-
+import { grantUserXp, XP_RULES } from "../utils/xpCalculation.js";
 
 const COLLOCATION_SELECT = `
   id,
@@ -35,8 +36,10 @@ const MODEL_CANDIDATES = [
     .split(",")
     .map((model) => model.trim())
     .filter(Boolean),
-  "gemini-3.5-flash",
   "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
 ];
 
 const callGeminiWithFallback = async ({
@@ -74,7 +77,7 @@ const callGeminiWithFallback = async ({
   }
 
   throw new Error(
-    `Không thể xử lý yêu cầu Writing bằng Gemini: ${lastError?.message || "Unknown error"}`,
+    `Không thể xử lý yêu cầu Gemini: ${lastError?.message || "Unknown error"}`,
   );
 };
 
@@ -189,7 +192,7 @@ export const saveCollocationsList = async ({
         interval: 1.0,
         ease_factor: 2.5,
         next_review: new Date().toISOString(),
-        source_skill: "COLLOCATION"
+        source_skill: "COLLOCATION",
       })
       .select()
       .single();
@@ -449,29 +452,28 @@ const variationsSchema = {
   },
 };
 
-export const getCollocationVariationsService = async (collocationId, userId) => {
+export const getCollocationVariationsService = async (
+  collocationId,
+  userId,
+) => {
   if (!collocationId) {
     throw new Error("Missing collocationId");
   }
 
-  // 1. Lấy thông tin Collocation & drill_variations từ bảng 'global_collocations'
+  // 1. Lấy thông tin Collocation từ DB
   const { data: collocation, error: colError } = await supabase
     .from("global_collocations")
-    .select("base_sentence, phrase, drill_variations")
+    .select("id, phrase, meaning, base_sentence, drill_variations")
     .eq("id", collocationId)
     .single();
 
   if (colError || !collocation) {
-    throw new Error(colError?.message || "Không tìm thấy collocation trong database!");
+    throw new Error(
+      colError?.message || "Không tìm thấy collocation trong database!",
+    );
   }
 
-  const baseSentence = collocation.base_sentence || "";
-  const phrase = collocation.phrase || "";
-  let currentVariations = Array.isArray(collocation.drill_variations)
-    ? collocation.drill_variations
-    : [];
-
-  // 2. Lấy trạng thái `step` của user từ bảng user_vocabularies
+  // 2. Lấy tiến trình học (step) của user
   let userStep = 0;
   if (userId) {
     const { data: userVocab } = await supabase
@@ -486,35 +488,54 @@ export const getCollocationVariationsService = async (collocationId, userId) => 
     }
   }
 
-  // 3. Kiểm tra điều kiện gọi AI:
-  // len(drill_variations) <( userStep * 3)  AND  len(drill_variations) < 9
-  // userStep++ vì mặc định đang là 0
-  userStep++;
-  const canGenerateWithAI =
-    currentVariations.length < (userStep * 3) && currentVariations.length < 9;
+  // 3. Phân luồng Active Recall vs Passive Drill
 
-  if (canGenerateWithAI) {
+  // LUỒNG ACTIVE (Từ lần học thứ 2 trở đi: step >= 1)
+  if (userStep >= 1) {
+    return {
+      mode: "ACTIVE",
+      step: userStep,
+      collocation: {
+        id: collocation.id,
+        phrase: collocation.phrase,
+        meaning: collocation.meaning,
+        baseSentence: collocation.base_sentence,
+      },
+      // Có thể mở rộng trả về gợi ý/chủ đề đặt câu
+      instructions:
+        userStep === 1
+          ? "Hãy đặt 1 câu đơn hoặc câu ghép tự nhiên chứa cụm từ này."
+          : "Hãy viết một đoạn văn ngắn (2-3 câu) hoặc kết hợp cụm từ này vào ngữ cảnh IELTS Speaking.",
+    };
+  }
+
+  // LUỒNG PASSIVE DRILL (Lần đầu gặp: step === 0)
+  let variations = Array.isArray(collocation.drill_variations)
+    ? collocation.drill_variations
+    : [];
+
+  // Nếu DB chưa có câu variation nào, generate 1 LẦN DUY NHẤT và lưu cứng lại vào DB
+  if (variations.length === 0) {
     try {
       const systemInstruction =
         "Bạn là một chuyên gia thiết kế bài tập IELTS Speaking & Collocation. Hãy tạo ra các câu biến thể tự nhiên, đúng ngữ pháp và trả về định dạng JSON chính xác.";
 
       const prompt = `
-Given the base sentence: "${baseSentence}"
-and target collocation phrase: "${phrase}"
+Given the base sentence: "${collocation.base_sentence || ""}"
+and target collocation phrase: "${collocation.phrase || ""}"
 
 Generate 3 gentle progressive sentence variations for a student to practice speaking.
 Rules:
-1. Every variation MUST include the exact phrase "${phrase}".
+1. Every variation MUST include the exact phrase "${collocation.phrase}".
 2. Keep vocabulary natural, simple, and accessible for everyday conversation (IELTS 5.5 - 6.5).
 3. Explanation notes MUST be written in Vietnamese (e.g. "Thay 'products' ➔ 'goods'").
 4. Variation 1: Synonym swap (replace 1-2 words).
 5. Variation 2: Structure shift (e.g. change subject/sentence pattern).
-6. Variation 3: Gentle upgrade from Variation 2 for IELTS Speaking. Add a natural speaking starter (e.g., "Honestly...", "In my opinion...", "Actually...") or slightly refine the vocabulary (e.g. 'minimal packaging'), BUT keep the tone spoken, natural, and friendly. DO NOT use formal IELTS Writing academic phrases like "As conscious consumers" or "It is imperative that".
+6. Variation 3: Gentle upgrade from Variation 2 for IELTS Speaking. Add a natural speaking starter (e.g., "Honestly...", "In my opinion...", "Actually...") or slightly refine the vocabulary, BUT keep the tone spoken, natural, and friendly.
 
-Return JSON matching the schema with exactly 3 items. Assign IDs sequentially starting from ${currentVariations.length + 1}.
+Return JSON matching the schema with exactly 3 items. Assign IDs 1, 2, 3.
 `.trim();
 
-      // Gọi Gemini bằng helper của bro
       const newGeneratedVars = await callGeminiWithFallback({
         contents: prompt,
         systemInstruction,
@@ -522,41 +543,33 @@ Return JSON matching the schema with exactly 3 items. Assign IDs sequentially st
       });
 
       if (Array.isArray(newGeneratedVars) && newGeneratedVars.length > 0) {
-        // Append 3 câu mới vào danh sách hiện tại (giới hạn cứng tối đa 9 phần tử)
-        const updatedVariations = [...currentVariations, ...newGeneratedVars].slice(0, 9);
-
-        // Lưu cập nhật lại vào bảng global_collocations
+        variations = newGeneratedVars;
+        // Lưu cố định vào database
         await supabase
           .from("global_collocations")
-          .update({ drill_variations: updatedVariations })
+          .update({ drill_variations: variations })
           .eq("id", collocationId);
-
-        // Trả về đúng 3 câu mới vừa generate
-        return newGeneratedVars;
       }
     } catch (aiError) {
-      console.warn("Lỗi khi generate câu bằng Gemini, fallback về dữ liệu DB:", aiError.message);
-      // Nếu Gemini có sự cố, drop xuống logic trả dữ liệu DB bên dưới
+      console.warn(
+        "Lỗi khi generate câu bằng Gemini cho lần đầu:",
+        aiError.message,
+      );
     }
   }
 
-  // 4. Nếu KHÔNG ĐỦ ĐIỀU KIỆN GENERATE (hoặc Gemini lỗi) -> Lấy dữ liệu từ DB
-  // Trường hợp A: DB có sẵn đủ câu theo lượt học của user
-  if (currentVariations.length >= userStep * 3) {
-    return currentVariations.slice(userStep * 3 - 3, userStep * 3);
-  }
-
-  // Trường hợp B: Lần học thứ 4+ (userStep đã lớn hoặc DB đã full 9 câu) -> Random 3 câu
-  if (currentVariations.length >= 3) {
-    const shuffled = [...currentVariations].sort(() => 0.5 - Math.random());
-    return shuffled.slice(0, 3);
-  }
-
-  // Trường hợp C: Dữ liệu dự phòng nếu mảng quá ít câu
-  return currentVariations;
+  return {
+    mode: "DRILL",
+    step: 0,
+    variations: variations.slice(0, 3),
+  };
 };
 
-export const completePhase3Service = async ({ collocationId, userId, rating = "good" }) => {
+export const completeReviewService = async ({
+  collocationId,
+  userId,
+  rating = "good",
+}) => {
   if (!collocationId || !userId) {
     throw new Error("Thiếu collocationId hoặc userId!");
   }
@@ -570,17 +583,20 @@ export const completePhase3Service = async ({ collocationId, userId, rating = "g
     .maybeSingle();
 
   if (fetchError || !record) {
-    throw new Error(fetchError?.message || "Không tìm thấy từ vựng này trong danh sách của user!");
+    throw new Error(
+      fetchError?.message ||
+        "Không tìm thấy từ vựng này trong danh sách của user!",
+    );
   }
 
-  // 2. Tính toán các thông số SRS mới dựa vào thuật toán sẵn có
+  // 2. Tính toán SRS mới
   const srsUpdate = buildSrsUpdatePayload(
     calculateNextReview({
-      rating, // Mặc định 'good' khi hoàn thành xong phase, hoặc client truyền lên (again, hard, good, easy)
+      rating,
       currentStep: record.step,
       currentInterval: record.interval,
       easeFactor: record.ease_factor,
-    })
+    }),
   );
 
   // 3. Cập nhật lại bản ghi trong Database
@@ -588,8 +604,7 @@ export const completePhase3Service = async ({ collocationId, userId, rating = "g
     .from("user_vocabularies")
     .update({
       ...srsUpdate,
-      // Tăng step lên +1 để lần sau gọi variations AI sẽ biết user đã tiến lên lượt mới
-      step: record.step + 1, 
+      step: record.step + 1,
       status: "learning",
     })
     .eq("id", record.id)
@@ -600,5 +615,297 @@ export const completePhase3Service = async ({ collocationId, userId, rating = "g
     throw new Error(`Lỗi cập nhật SRS: ${updateError.message}`);
   }
 
-  return updatedData;
+  // 4. Tính toán XP dựa trên quy tắc chung
+  const xpEarned =
+    XP_RULES.COLLOCATION_REVIEW[rating] || XP_RULES.COLLOCATION_REVIEW.good;
+
+  // 5. Gọi helper cộng XP & Streak
+  const reward = await grantUserXp({
+    userId,
+    xpEarned,
+    collocationsLearned: 1,
+  });
+
+  return {
+    ...updatedData,
+    reward,
+  };
+};
+
+// ============================================================================
+// ==================== ACTIVE RECALL PHASES (1, 2, 3) ========================
+// ============================================================================
+
+export const getPhase1TranslationService = async ({
+  collocationId,
+  userId,
+}) => {
+  if (!collocationId) throw new Error("Missing collocationId");
+
+  // 1. Lấy thông tin cụm từ bao gồm cả cột cached phase1_translation
+  const { data: collocation, error: colError } = await supabase
+    .from("global_collocations")
+    .select("id, phrase, meaning, base_sentence, phase1_translation")
+    .eq("id", collocationId)
+    .single();
+
+  if (colError || !collocation) {
+    throw new Error(
+      colError?.message || "Không tìm thấy collocation trong database!",
+    );
+  }
+
+  // 2. Nếu đã có cache dữ liệu trong Database thì trả về luôn (không tốn quota)
+  if (
+    collocation.phase1_translation &&
+    typeof collocation.phase1_translation === "object" &&
+    collocation.phase1_translation.vi_sentence
+  ) {
+    return collocation.phase1_translation;
+  }
+
+  // 3. Nếu chưa có cache, gọi Groq để tạo bài tập dịch
+  const systemInstruction = `Bạn là một giáo viên tiếng Anh chuyên nghiệp. Nhiệm vụ của bạn là tạo ra một bài tập dịch thuật (từ tiếng Việt sang tiếng Anh) nhằm giúp học viên luyện tập cụm từ mục tiêu. Bạn LUÔN LUÔN chỉ trả về một định dạng JSON duy nhất.`;
+
+  const prompt = `
+Target collocation: "${collocation.phrase}"
+Meaning: "${collocation.meaning}"
+Context/Base sentence: "${collocation.base_sentence || ""}"
+
+Hãy tạo ra một câu tiếng Việt hoàn toàn mới (vi_sentence), mang tính ứng dụng thực tế. Câu này khi dịch sang tiếng Anh phải SỬ DỤNG CHÍNH XÁC cụm từ "${collocation.phrase}".
+
+Trả về JSON theo cấu trúc sau:
+{
+  "vi_sentence": "Câu tiếng Việt cần dịch",
+  "accepted_answer": "Đáp án tiếng Anh gợi ý tự nhiên nhất",
+  "suggested_vocab": [
+    {
+      "word": "từ vựng gợi ý bằng tiếng anh 1",
+      "meaning": "giải nghĩa tiếng Việt"
+    }
+  ]
+}
+- suggested_vocab: Cung cấp toàn bộ từ vựng gợi ý cốt lõi (bằng tiếng Anh) (ngoài cụm từ mục tiêu) giúp học viên dễ dịch hơn. Giải nghĩa tiếng Việt ngắn gọn.
+  `.trim();
+
+  const aiResult = await callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.3,
+  });
+
+  // 4. Lưu kết quả vừa tạo vào cột phase1_translation để dùng lại lần sau
+  if (aiResult && aiResult.vi_sentence) {
+    const { error: updateError } = await supabase
+      .from("global_collocations")
+      .update({ phase1_translation: aiResult })
+      .eq("id", collocationId);
+
+    if (updateError) {
+      console.warn(
+        "Lỗi khi cache phase1_translation vào Database:",
+        updateError.message,
+      );
+    }
+  }
+
+  return aiResult;
+};
+
+// ----------------------------------------------------------------------------
+
+export const evaluatePhase2CollocationService = async ({
+  collocationId,
+  userSentence,
+  userId,
+}) => {
+  if (!collocationId || !userSentence) {
+    throw new Error("Missing collocationId or userSentence");
+  }
+
+  const { data: collocation, error: colError } = await supabase
+    .from("global_collocations")
+    .select("phrase, meaning")
+    .eq("id", collocationId)
+    .single();
+
+  if (colError || !collocation) {
+    throw new Error("Không tìm thấy collocation!");
+  }
+
+  const systemInstruction = `Bạn là một giám khảo chấm thi tiếng Anh chuyên nghiệp, khách quan và công bằng.
+Nhiệm vụ của bạn là đánh giá câu do học viên tự đặt dựa trên việc sử dụng cụm từ mục tiêu (collocation).
+Bạn LUÔN LUÔN chỉ trả về một định dạng JSON duy nhất, không kèm thêm bất kỳ văn bản dẫn dắt nào.`;
+
+const prompt = `
+Target collocation: "${collocation.phrase}" (Nghĩa: ${collocation.meaning})
+User's sentence: "${userSentence}"
+
+CÁC QUY TẮC ĐÁNH GIÁ (TUÂN THỦ TỰ ĐỘNG KHÁCH QUAN):
+
+1. TRẠNG THÁI (state):
+   - "Not completed": KHÔNG sử dụng cụm từ mục tiêu, hoặc câu bị sai ngữ pháp nghiêm trọng dẫn đến mất nghĩa hoàn toàn.
+   - "Good": Có dùng cụm từ mục tiêu và hiểu được ý, nhưng mắc LỖI NGỮ PHÁP RÕ RÀNG hoặc diễn đạt đậm chất gượng gạo / Vietlish.
+   - "Excellent": Dùng đúng cụm từ mục tiêu, ngữ pháp chuẩn xác và diễn đạt tự nhiên như người bản xứ.
+
+   * NGUYÊN TẮC QUAN TRỌNG ĐỂ TRÁNH CHẤM SAI:
+     - CHẤP NHẬN biến thể chia thì, chia ngôi, dạng V-ing / To-V của cụm từ mục tiêu (Ví dụ: với "cut down on", các dạng "cutting down on", "has cut down on" đều HOÀN TOÀN HỢP LỆ).
+     - Nếu câu của học viên ĐÚNG NGỮ PHÁP và DIỄN ĐẠT TỰ NHIÊN, BẮT BUỘC phải cho "Excellent" (dù là câu ngắn hay câu đơn giản). KHÔNG ĐƯỢC ép học viên phải viết câu dài / từ vựng phức tạp mới cho Excellent.
+
+2. PHẢN HỒI (feedback):
+   - Trả về 1-2 câu nhận xét bằng tiếng Việt.
+   - Nếu "Excellent": Khen ngợi điểm làm tốt.
+   - Nếu "Good" hoặc "Not completed": Chỉ rõ lỗi sai cụ thể (sai thì, dùng sai giới từ, gượng gạo ở đâu) để học viên sửa.
+
+3. CÂU GỢI Ý (correctedSentence):
+   - Nếu state là "Good" hoặc "Not completed": Trả về câu đã sửa chuẩn tự nhiên, giữ nguyên ý đồ của học viên.
+   - Nếu state là "Excellent": Trả về null (hoặc chính câu của học viên).
+
+CẤU TRÚC JSON ĐẦU RA:
+{
+  "state": "Not completed" | "Good" | "Excellent",
+  "feedback": "Nhận xét tiếng Việt ngắn gọn (1-2 câu)",
+  "correctedSentence": "Câu gợi ý chuẩn bản xứ" | null
+}
+`.trim();
+
+  const aiResult = await callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.2,
+  });
+
+  if (aiResult && aiResult.state === "Excellent") {
+    // 1. Lấy dữ liệu mảng hiện tại
+    const { data, error: fetchError } = await supabase
+      .from("global_collocations")
+      .select("community_sentences")
+      .eq("id", collocationId)
+      .single();
+
+    if (fetchError) {
+      console.error("Lỗi khi lấy dữ liệu:", fetchError);
+      return;
+    }
+
+    // 2. Thêm userSentence vào mảng hiện tại (nếu null thì khởi tạo mảng mới)
+    const currentSentences = data.community_sentences || [];
+    const updatedSentences = [...currentSentences, userSentence].slice(-5); // Giữ lại tối đa 5 câu gần nhất
+
+    // 3. Cập nhật mảng mới lên Supabase
+    const { error: updateError } = await supabase
+      .from("global_collocations")
+      .update({ community_sentences: updatedSentences })
+      .eq("id", collocationId);
+
+    if (updateError) {
+      console.error("Lỗi khi cập nhật community_sentences:", updateError);
+    }
+
+    aiResult.communitySentences = updatedSentences; // Trả về mảng sentences mới nhất cho client
+  }
+
+  return aiResult;
+};
+
+// ----------------------------------------------------------------------------
+
+export const evaluatePhase3CollocationService = async ({
+  collocationId,
+  userStory,
+  userId,
+}) => {
+  if (!collocationId || !userStory) {
+    throw new Error("Missing collocationId or userStory");
+  }
+
+  const { data: collocation, error: colError } = await supabase
+    .from("global_collocations")
+    .select("phrase")
+    .eq("id", collocationId)
+    .single();
+
+  if (colError || !collocation) {
+    throw new Error("Không tìm thấy collocation!");
+  }
+
+  const systemInstruction = `Bạn là một cựu giám khảo IELTS Speaking/Writing chuyên nghiệp, khách quan và chính xác.
+Nhiệm vụ của bạn là đánh giá đoạn văn của học viên. Bạn LUÔN LUÔN trả về định dạng JSON duy nhất, không thêm bất kỳ văn bản dẫn dắt nào ngoài JSON.`;
+
+const prompt = `
+Target collocation: "${collocation.phrase}"
+User's story: "${userStory}"
+
+CÁC QUY TẮC ĐÁNH GIÁ (BẮT BUỘC TUÂN THỦ STRICTLY):
+
+1. THANG ĐIỂM & TRẠNG THÁI (state):
+   - Score < 70: "Not completed" (isPassed: false)
+   - Score 70 - 89: "Good" (isPassed: true) -> Bài viết có lỗi ngữ pháp nhỏ, dùng từ chưa thực sự tự nhiên nhưng hiểu được.
+   - Score 90 - 100: "Excellent" (isPassed: true) -> Bài viết chuẩn ngữ pháp, tự nhiên, sử dụng cụm từ mục tiêu mượt mà.
+   * LƯU Ý ĐẶC BIỆT: Nếu đoạn văn KHÔNG CÓ LỖI NGỮ PHÁP RÕ RÀNG và diễn đạt tự nhiên, BẮT BUỘC phải cho Score >= 90 và state = "Excellent". Không được tự hạ điểm xuống "Good" nếu người dùng viết đúng.
+
+2. QUY TẮC XỬ LÝ LỖI (highlightedErrors):
+   - CHỈ liệt kê vào "highlightedErrors" các lỗi SAI NGỮ PHÁP thực sự, sai ngữ cảnh, hoặc dùng sai cụm từ mục tiêu.
+   - TUYỆT ĐỐI KHÔNG coi các văn phong tương đương (ví dụ: Quá khứ đơn vs Hiện tại hoàn thành, "helps me" vs "has helped me", "To achieve this" vs "To achieve this goal") là LỖI SAI.
+   - Nếu bài viết của user đã đúng ngữ pháp và tự nhiên, mảng "highlightedErrors" BẮT BUỘC phải là mảng rỗng [] và score phải >= 90.
+
+3. QUY TẮC VIẾT LẠI (correctedStory):
+   - Phải sử dụng chính xác cụm từ "${collocation.phrase}".
+   - Giữ nguyên ý nghĩa gốc và số lượng câu của bài gốc (khuyến khích đúng 3 câu).
+   - Nếu bài của user đã đạt "Excellent" (score >= 90), correctedStory có thể giữ nguyên hoặc chỉ tinh chỉnh cực kỳ nhẹ nhàng.
+
+YÊU CẦU ĐẦU RA (JSON format):
+{
+  "state": "Not completed" | "Good" | "Excellent",
+  "score": number,
+  "isPassed": boolean,
+  "feedback": "Nhận xét tổng quan bằng tiếng Việt (ngắn gọn, tập trung vào ưu điểm và điểm cần cải thiện nếu có)",
+  "correctedStory": "Đoạn văn hoàn chỉnh đã nâng cấp/sửa lỗi",
+  "highlightedErrors": [
+    {
+      "error": "cụm từ sai thực sự trong bài user",
+      "correction": "sửa lại cho đúng"
+    }
+  ]
+}
+`.trim();
+
+  const aiResult = await callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.2,
+  });
+
+  if (aiResult && aiResult.state === "Excellent") {
+    // 1. Lấy dữ liệu mảng hiện tại
+    const { data, error: fetchError } = await supabase
+      .from("global_collocations")
+      .select("community_stories")
+      .eq("id", collocationId)
+      .single();
+
+    if (fetchError) {
+      console.error("Lỗi khi lấy dữ liệu:", fetchError);
+      return;
+    }
+
+    // 2. Thêm userStory vào mảng hiện tại (nếu null thì khởi tạo mảng mới)
+    const currentStories = data.community_stories || [];
+    const updatedStories = [...currentStories, userStory].slice(-5); // Giữ lại tối đa 5 câu gần nhất
+
+    // 3. Cập nhật mảng mới lên Supabase
+    const { error: updateError } = await supabase
+      .from("global_collocations")
+      .update({ community_stories: updatedStories })
+      .eq("id", collocationId);
+
+    if (updateError) {
+      console.error("Lỗi khi cập nhật community_stories:", updateError);
+    }
+
+    aiResult.communityStories = updatedStories; // Trả về mảng stories mới nhất cho client
+
+  }
+
+  return aiResult;
 };

@@ -1,253 +1,61 @@
-import dotenv from "dotenv";
-import { generateGeminiContent } from "./geminiService.js";
+import { callGroqWithFallback } from "../lib/groq.js";
 
-dotenv.config();
-
-const MODEL_CANDIDATES = [
-  ...(process.env.GEMINI_MODEL || "")
-    .split(",")
-    .map((model) => model.trim())
-    .filter(Boolean),
-  "gemini-3.5-flash",
-  "gemini-3.6-flash",
-];
-
-const outlineSchema = {
-  type: "OBJECT",
-  properties: {
-    essayType: { type: "STRING" },
-    keyTermsAnalysis: { type: "STRING" },
-    recommendedStructure: { type: "STRING" },
-    brainstormedIdeas: {
-      type: "OBJECT",
-      properties: {
-        body1: {
-          type: "OBJECT",
-          properties: {
-            mainPoint: { type: "STRING" },
-            supportingIdeas: { type: "ARRAY", items: { type: "STRING" } },
-          },
-          required: ["mainPoint", "supportingIdeas"],
-        },
-        body2: {
-          type: "OBJECT",
-          properties: {
-            mainPoint: { type: "STRING" },
-            supportingIdeas: { type: "ARRAY", items: { type: "STRING" } },
-          },
-          required: ["mainPoint", "supportingIdeas"],
-        },
-      },
-      required: ["body1", "body2"],
-    },
-    usefulVocab: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          word: { type: "STRING" },
-          meaning: { type: "STRING" },
-        },
-        required: ["word", "meaning"],
-      },
-    },
-  },
-  required: [
-    "essayType",
-    "keyTermsAnalysis",
-    "recommendedStructure",
-    "brainstormedIdeas",
-    "usefulVocab",
-  ],
-};
-
-const evaluationSchema = {
-  type: "OBJECT",
-  properties: {
-    bandScores: {
-      type: "OBJECT",
-      properties: {
-        taskResponse: { type: "NUMBER" },
-        coherenceCohesion: { type: "NUMBER" },
-        lexicalResource: { type: "NUMBER" },
-        grammaticalRange: { type: "NUMBER" },
-        overall: { type: "NUMBER" },
-      },
-      required: [
-        "taskResponse",
-        "coherenceCohesion",
-        "lexicalResource",
-        "grammaticalRange",
-        "overall",
-      ],
-    },
-    counselorSummary: { type: "STRING" },
-    criteriaDiagnostics: {
-      type: "OBJECT",
-      properties: {
-        taskResponse: {
-          type: "OBJECT",
-          properties: {
-            strengths: { type: "ARRAY", items: { type: "STRING" } },
-            weaknesses: { type: "ARRAY", items: { type: "STRING" } },
-            actionPlan: { type: "STRING" },
-          },
-          required: ["strengths", "weaknesses", "actionPlan"],
-        },
-        coherenceCohesion: {
-          type: "OBJECT",
-          properties: {
-            strengths: { type: "ARRAY", items: { type: "STRING" } },
-            weaknesses: { type: "ARRAY", items: { type: "STRING" } },
-            actionPlan: { type: "STRING" },
-          },
-          required: ["strengths", "weaknesses", "actionPlan"],
-        },
-        lexicalResource: {
-          type: "OBJECT",
-          properties: {
-            strengths: { type: "ARRAY", items: { type: "STRING" } },
-            weaknesses: { type: "ARRAY", items: { type: "STRING" } },
-            actionPlan: { type: "STRING" },
-          },
-          required: ["strengths", "weaknesses", "actionPlan"],
-        },
-        grammaticalRange: {
-          type: "OBJECT",
-          properties: {
-            strengths: { type: "ARRAY", items: { type: "STRING" } },
-            weaknesses: { type: "ARRAY", items: { type: "STRING" } },
-            actionPlan: { type: "STRING" },
-          },
-          required: ["strengths", "weaknesses", "actionPlan"],
-        },
-      },
-      required: [
-        "taskResponse",
-        "coherenceCohesion",
-        "lexicalResource",
-        "grammaticalRange",
-      ],
-    },
-    inlineCorrections: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          originalSentence: { type: "STRING" },
-          correctedSentence: { type: "STRING" },
-          explanation: { type: "STRING" },
-          type: {
-            type: "STRING",
-            enum: ["Grammar", "Vocabulary", "Task Response", "Coherence"],
-          },
-        },
-        required: [
-          "originalSentence",
-          "correctedSentence",
-          "explanation",
-          "type",
-        ],
-      },
-    },
-    highValueVocabulary: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          originalPhrase: { type: "STRING" },
-          band8Upgrade: { type: "STRING" },
-          contextExample: { type: "STRING" },
-        },
-        required: ["originalPhrase", "band8Upgrade", "contextExample"],
-      },
-    },
-    incrementalUpgradedEssay: { type: "STRING" },
-  },
-  required: [
-    "bandScores",
-    "counselorSummary",
-    "criteriaDiagnostics",
-    "inlineCorrections",
-    "highValueVocabulary",
-    "incrementalUpgradedEssay",
-  ],
-};
-
-const tutorChatSchema = {
-  type: "OBJECT",
-  properties: {
-    reply: { type: "STRING" },
-  },
-  required: ["reply"],
-};
-
-const callGeminiWithFallback = async ({
-  contents,
-  systemInstruction,
-  schema,
-}) => {
-  let lastError = null;
-
-  for (const modelName of [...new Set(MODEL_CANDIDATES)]) {
-    const response = await generateGeminiContent({
-      modelName,
-      contents,
-      systemInstruction,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: schema,
-        temperature: 0.2,
-      },
-    });
-
-    if (response.success) {
-      if (response.data.json) return response.data.json;
-      try {
-        return JSON.parse(response.data.text);
-      } catch (error) {
-        lastError = new Error(
-          `Gemini trả về JSON không hợp lệ: ${error.message}`,
-        );
-        continue;
-      }
-    }
-
-    lastError = new Error(response.error?.message || "Gemini request failed");
-  }
-
-  throw new Error(
-    `Không thể xử lý yêu cầu Writing bằng Gemini: ${lastError?.message || "Unknown error"}`,
-  );
-};
-
-const requireText = (value, fieldName) => {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${fieldName} is required`);
+const requireText = (value, name) => {
+  if (!value || typeof value !== "string" || !value.trim()) {
+    throw new Error(`Tham số '${name}' không hợp lệ hoặc bị trống.`);
   }
   return value.trim();
 };
 
+/**
+ * Lập Outline phân tích đề bài IELTS Writing Task 2
+ */
 export const generateEssayOutline = async (questionText) => {
   const question = requireText(questionText, "questionText");
-  return callGeminiWithFallback({
-    schema: outlineSchema,
-    systemInstruction:
-      "Bạn là IELTS Writing Task 2 Counselor. Hướng dẫn phân tích đề bằng tiếng Việt, chính xác, thực tế và không viết bài hoàn chỉnh thay thí sinh.",
-    contents: `
-Phân tích đề IELTS Writing Task 2 sau đây trước khi thí sinh viết bài:
+
+  const systemInstruction = `Bạn là IELTS Writing Task 2 Counselor. Hướng dẫn phân tích đề bằng tiếng Việt, chính xác, thực tế và không viết bài hoàn chỉnh thay thí sinh.
+BẮT BUỘC trả về duy nhất 1 JSON Object tuân thủ theo cấu trúc sau (Không bọc Markdown codeblock):
+{
+  "essayType": "Loại bài essay (vd: Opinion, Discussion, Cause & Effect...)",
+  "keywords": [
+    { "word": "từ khóa", "explanation": "giải thích ý nghĩa" }
+  ],
+  "pitfalls": ["bẫy cần tránh 1", "bẫy cần tránh 2"],
+  "structure": {
+    "introduction": "Hướng dẫn viết Mở bài",
+    "body1": "Hướng dẫn viết Thân bài 1",
+    "body2": "Hướng dẫn viết Thân bài 2",
+    "conclusion": "Hướng dẫn viết Kết luận"
+  },
+  "brainstorming": {
+    "body1Ideas": ["ý tưởng 1", "ý tưởng 2"],
+    "body2Ideas": ["ý tưởng 1", "ý tưởng 2"]
+  },
+  "usefulVocabulary": [
+    { "phrase": "cụm từ tiếng Anh", "meaning": "nghĩa tiếng Việt" }
+  ]
+}`;
+
+  const prompt = `Phân tích đề IELTS Writing Task 2 sau đây trước khi thí sinh viết bài:
 "${question}"
 
-Xác định đúng essay type, giải thích từ khóa và bẫy, đề xuất cấu trúc 4 phần (mở bài, thân bài 1, thân bài 2, kết luận), brainstorm hai luận điểm cân bằng và cung cấp từ vựng hữu ích. Trả về đúng JSON schema, không thêm Markdown.
-`.trim(),
+Xác định đúng essay type, giải thích từ khóa và bẫy, đề xuất cấu trúc 4 phần (mở bài, thân bài 1, thân bài 2, kết luận), brainstorm hai luận điểm cân bằng và cung cấp từ vựng hữu ích. Trả về đúng JSON format.`.trim();
+
+  return callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.2,
   });
 };
 
+/**
+ * Xử lý Tutor Chat trợ giúp Socratic Step-by-Step
+ */
 export const handleTutorChat = async (
   questionText,
   chatHistory,
   userMessage,
-  targetBand = "6.5",
+  targetBand = "6.5"
 ) => {
   const question = requireText(questionText, "questionText");
   const message = requireText(userMessage, "userMessage");
@@ -255,10 +63,11 @@ export const handleTutorChat = async (
   const normalizedBand = allowedBands.includes(String(targetBand))
     ? String(targetBand)
     : "7.0";
+
   const history = Array.isArray(chatHistory)
     ? chatHistory
         .filter(
-          (item) => item && (item.role === "user" || item.role === "assistant"),
+          (item) => item && (item.role === "user" || item.role === "assistant")
         )
         .slice(-12)
         .map((item) => ({
@@ -268,10 +77,9 @@ export const handleTutorChat = async (
         }))
     : [];
 
-  return callGeminiWithFallback({
-    schema: tutorChatSchema,
-    systemInstruction: `
-Bạn là giáo viên IELTS Writing Task 2 tận tụy, nghiêm túc nhưng gần gũi. Luôn trả lời bằng tiếng Việt; chỉ dùng tiếng Anh cho câu mẫu, collocations và vocabulary.
+  const systemInstruction = `Bạn là giáo viên IELTS Writing Task 2 tận tụy, nghiêm túc nhưng gần gũi. Luôn trả lời bằng tiếng Việt; chỉ dùng tiếng Anh cho câu mẫu, collocations và vocabulary.
+Trả về kết quả dưới dạng JSON Object với key "reply" chứa nội dung câu trả lời.
+Ví dụ format JSON: { "reply": "Nội dung phản hồi..." }
 
 CẤM (STRICT NEGATIVE CONSTRAINTS):
 - CẤM ĐỀ CẬP, TÓM TẮT HOẶC LIỆT KÊ NỘI DUNG CỦA CẢ HAI THÂN BÀI (Body 1 & Body 2) TRONG CÙNG MỘT TIN NHẮN.
@@ -283,7 +91,7 @@ LUỒNG SOCRATIC STEP-BY-STEP (CHỈ XỬ LÝ 1 BƯỚC TẠI MỘT THỜI ĐI�
 - BƯỚC 2 (Đào sâu Body 1): Thảo luận & gợi ý Collocations cho Body 1. Xử lý xong hoàn toàn mới hỏi sang Body 2.
 - BƯỚC 3 (Đào sâu Body 2): Thảo luận & gợi ý Collocations cho Body 2.
 
-QUY TẮC FORMAT BẮT BUỘC:
+QUY TẮC FORMAT BẮT BUỘC TRONG VALUE CỦA "reply":
 - Tối đa 120-150 từ mỗi phản hồi.
 - Bắt buộc dùng Markdown: **bôi đậm**, dấu gạch đầu dòng (-) cho danh sách, và 2 lần xuống dòng (\\n\\n) giữa 3 phần.
 - Mọi phản hồi BẮT BUỘC gồm đúng 3 phần theo thứ tự sau:
@@ -299,7 +107,6 @@ QUY TẮC FORMAT BẮT BUỘC:
 [Đúng 1 câu hỏi mở ngắn để học viên tự nghĩ ý tiếp theo]
 
 MẪU PHẢN HỒI BẮT BUỘC KHI HỌC VIÊN VỪA CHỌN TRUNG LẬP (FEW-SHOT):
-
 🎯 **Đánh giá hướng đi:**
 Lựa chọn hướng đi trung lập và phản biện từ 'nobody' là cực kỳ thông minh! Hướng đi này giúp bài viết rất chặt chẽ.
 
@@ -308,18 +115,9 @@ Lựa chọn hướng đi trung lập và phản biện từ 'nobody' là cực 
 - **Collocations nên dùng:** **free online sources**, **instant access**, **digital reading**.
 
 💬 **Định hướng tiếp theo:**
-Bạn đang nghĩ đến những lý do cụ thể nào khiến người đọc ưu tiên tài liệu online hơn ở Body 1?
+Bạn đang nghĩ đến những lý do cụ thể nào khiến người đọc ưu tiên tài liệu online hơn ở Body 1?`.trim();
 
-Áp dụng cấu trúc 3 phần rõ ràng trên cho mọi phản hồi. Không thêm phần nào khác.
-
-IMPORTANT FORMATTING RULES:
-- ALWAYS format your response using standard Markdown.
-- Use DOUBLE LINE BREAKS (\n\n) between different paragraphs or ideas.
-- Use bullet points (*) for lists of points or vocabulary suggestions. NEVER collapse bullet points into a single continuous paragraph.
-- Use bold (**text**) for key terms or labels.
-`.trim(),
-    contents: `
-Đề bài IELTS Writing Task 2:
+  const prompt = `Đề bài IELTS Writing Task 2:
 ${question}
 
 Target Band:
@@ -333,41 +131,73 @@ Tin nhắn mới nhất của học viên:
 
 YÊU CẦU QUAN TRỌNG:
 Dựa vào tin nhắn mới nhất, hãy xác định cuộc hội thoại đang ở BƯỚC NÀO trong luồng (Bước 1: Chốt góc nhìn -> Bước 2: Body 1 -> Bước 3: Body 2).
-TUYỆT ĐỐI CHỈ phản hồi đúng bước đó. CẤM gom nội dung của cả 2 body vào tin nhắn này!
-`.trim(),
+TUYỆT ĐỐI CHỈ phản hồi đúng bước đó. CẤM gom nội dung của cả 2 body vào tin nhắn này! Trả về JSON Object.`.trim();
+
+  return callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.2,
   });
 };
 
+/**
+ * YÊU CẦU 2: HÀM EVALUATE ESSAY (Chấm bài IELTS Writing Task 2)
+ */
 export const evaluateEssay = async (questionText, userEssay, targetBand = "6.5") => {
-  const question = requireText(questionText, "questionText");
-  const essay = requireText(userEssay, "userEssay");
-  return callGeminiWithFallback({
-    schema: evaluationSchema,
-    systemInstruction:
-      "Bạn là Giám khảo IELTS Writing Task 2 Senior nổi tiếng cực kỳ BẢO THỦ, KHẮT KHE và TRỪ ĐIỂM THẲNG TAY. Bạn chấm đúng theo quy chuẩn IELTS Band Descriptors thực tế của IDP/BC. TUYỆT ĐỐI KHÔNG nâng điểm vì tiềm năng, KHÔNG 'nương tay' cho thái độ tích cực. Nếu bài có lỗi logic nghiêm trọng (lạc đề nhẹ, lập luận đi ngược thực tế), điểm Task Response TỐI ĐA chỉ là 5.5 hoặc 6.0. TOÀN BỘ các phần nhận xét (counselorSummary, strengths, weaknesses, actionPlan, explanation) BẮT BUỘC VIẾT BẰNG TIẾNG VIỆT tự nhiên, sâu sắc và thẳng thắn. Các câu ví dụ, từ vựng và bài incrementalUpgradedEssay giữ nguyên bằng Tiếng Anh.",
-    contents: `
+  if (!questionText?.trim() || !userEssay?.trim()) {
+    throw new Error("questionText và userEssay là bắt buộc.");
+  }
+
+  const systemInstruction = `Bạn là Giám khảo IELTS Writing Task 2 Senior nổi tiếng cực kỳ BẢO THỦ, KHẮT KHE và TRỪ ĐIỂM THẲNG TAY. Bạn chấm đúng theo quy chuẩn IELTS Band Descriptors thực tế của IDP/BC. 
+TUYỆT ĐỐI KHÔNG nâng điểm vì tiềm năng, KHÔNG 'nương tay' cho thái độ tích cực. Nếu bài có lỗi logic nghiêm trọng, phạt thẳng điểm Task Response xuống 5.5 hoặc 6.0.
+
+BẮT BUỘC trả về đúng định dạng JSON chuẩn theo đúng Schema sau (Không kèm markdown codeblock):
+{
+  "bandScores": {
+    "taskResponse": 6.0,
+    "coherenceCohesion": 6.5,
+    "lexicalResource": 6.0,
+    "grammaticalRange": 6.0,
+    "overall": 6.0
+  },
+  "counselorSummary": "Nhận xét thẳng thắn bằng Tiếng Việt (3-4 câu), chỉ rõ lý do bị trừ điểm.",
+  "criteriaDiagnostics": {
+    "taskResponse": { "strengths": ["..."], "weaknesses": ["..."], "actionPlan": "..." },
+    "coherenceCohesion": { "strengths": ["..."], "weaknesses": ["..."], "actionPlan": "..." },
+    "lexicalResource": { "strengths": ["..."], "weaknesses": ["..."], "actionPlan": "..." },
+    "grammaticalRange": { "strengths": ["..."], "weaknesses": ["..."], "actionPlan": "..." }
+  },
+  "inlineCorrections": [
+    {
+      "originalSentence": "Câu gốc bị lỗi",
+      "correctedSentence": "Câu sửa chuẩn Tiếng Anh",
+      "explanation": "Giải thích lỗi bằng Tiếng Việt",
+      "type": "Grammar"
+    }
+  ],
+  "highValueVocabulary": [
+    {
+      "originalPhrase": "cụm gốc",
+      "bandUpgrade": "cụm nâng cấp Band ${targetBand}+",
+      "contextExample": "Ví dụ câu Tiếng Anh"
+    }
+  ],
+  "incrementalUpgradedEssay": "Bài viết mẫu Band ${targetBand} bằng Tiếng Anh, phân tách rõ các đoạn bằng 2 lần xuống dòng (\\n\\n)"
+}`;
+
+  const prompt = `
 Đề bài IELTS Writing Task 2:
-"${question}"
+"${questionText}"
 
 Bài viết của thí sinh:
-"${essay}"
+"${userEssay}"
 
-Hãy chấm bài theo tiêu chuẩn TRỪ ĐIỂM NGHIÊM NGẶT với các quy tắc sau:
+Hãy chấm bài theo đúng quy tắc BẢO THỦ, KHẮT KHE đã nêu ở System Instruction và trả về duy nhất 1 JSON Object.
+  `.trim();
 
-1. ĐÁNH GIÁ ĐIỂM SỐ (Bảo thủ 100%):
-   - Task Response: Chiếu thẳng lỗi logic (ví dụ: đưa ý không liên quan, lập luận sai thực tế). Nếu luận điểm thiếu tính thuyết phục, phạt thẳng xuống 5.5 - 6.0.
-   - Coherence & Cohesion: Soi kỹ việc dùng sai từ nối (ví dụ: dùng 'By contrast' sai ngữ cảnh) và các câu bị ngắt kết nối ý.
-   - Lexical Resource: Trừ điểm các từ vựng vụng về, dịch thô từ tiếng Việt (ví dụ: 'realistic feelings', 'entertainment places').
-   - Grammatical Range: Trừ điểm nếu cấu trúc câu lặp lại đơn điệu dạng Subject + Verb hoặc mắc lỗi giới từ/diễn đạt.
-
-2. YÊU CẦU NỘI DUNG NGUYÊN BẢN TRẢ VỀ JSON:
-   - counselorSummary: Nhận xét thẳng thắn bằng Tiếng Việt (3-4 câu), chỉ rõ lý do vì sao bài viết bị 'bóp' điểm và cần sửa gấp điểm yếu cốt lõi nào.
-   - criteriaDiagnostics: Phân tích 4 tiêu chí bằng Tiếng Việt. Phần 'weaknesses' phải mổ xẻ gắt gao, không khen chung chung. Phần 'actionPlan' đưa ra giải pháp khắc phục cụ thể.
-   - inlineCorrections: Nhặt ra tất cả các câu vụng về, đưa ra cách sửa (Tiếng Anh) và GIẢI THÍCH LỖI BẰNG TIẾNG VIỆT rõ ràng vì sao viết như vậy bị trừ điểm.
-   - highValueVocabulary: Trích xuất cụm từ nâng band (gốc, nâng cấp Band 8.0+, ví dụ Tiếng Anh).
-   - incrementalUpgradedEssay: Bài viết mẫu Band ${targetBand} bằng Tiếng Anh, phân tách rõ các đoạn bằng 2 lần xuống dòng (\\n\\n).
-
-Trả về đúng JSON Schema.
-`.trim(),
+  return callGroqWithFallback({
+    prompt,
+    systemInstruction,
+    temperature: 0.2,
   });
 };
