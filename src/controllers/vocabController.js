@@ -8,7 +8,7 @@ import {
   removeUserVocabularyEntry,
 } from '../services/vocabService.js';
 
-import { ensureAudioUrl } from '../services/audioService.js';
+import { ensureAudioUrl } from '../utils/audio.js';
 
 // Hàm lấy User ID an toàn từ Token hoặc Dev Fallback
 const getUserIdFromReq = (req) => {
@@ -282,11 +282,12 @@ export const getDueCards = async (req, res) => {
 export const getGlobalDictionary = async (req, res) => {
   const search = String(req.query.search || '');
   const pos = String(req.query.pos || 'all');
+  const wordType = String(req.query.wordType || 'all');
   const page = Number(req.query.page || 1);
   const limit = Number(req.query.limit || 9);
 
   try {
-    const result = await fetchGlobalDictionary({ search, pos, page, limit });
+    const result = await fetchGlobalDictionary({ search, pos, wordType, page, limit });
     return res.status(200).json({
       success: true,
       data: result.data,

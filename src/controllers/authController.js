@@ -122,7 +122,8 @@ export const signIn = async (req, res) => {
             user: {
                 id: user.id,
                 username: user.username,
-                email: user.email
+                email: user.email,
+                role: user.role
             }
         });
 
@@ -212,7 +213,7 @@ export const getMe = async (req, res) => {
 
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, username, email, created_at')
+      .select('id, username, email, created_at, role')
       .eq('id', userId)
       .maybeSingle();
 
@@ -225,6 +226,7 @@ export const getMe = async (req, res) => {
       username: user.username,
       email: user.email,
       displayName: user.display_name,
+      role: user.role,
       createdAt: user.created_at
     });
 

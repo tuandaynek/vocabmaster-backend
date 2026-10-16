@@ -9,6 +9,9 @@ import speakingRoute from "./routes/speakingRoute.js";
 import writingRoute from "./routes/writingRoute.js";
 import profileRoute from "./routes/profileRoute.js";
 import websiteRoute from "./routes/websiteRoute.js";
+import adminRoute from "./routes/adminRoute.js"
+import grammarRoute from './routes/grammarRoute.js'
+
 import { handleTtsSample } from "./controllers/speakingController.js";
 import rateLimit from 'express-rate-limit'
 
@@ -57,6 +60,8 @@ app.use("/api/speaking", speakingRoute);
 app.use("/api/writing", writingRoute);
 app.use("/api/profile", profileRoute);
 app.use("/api/website", websiteRoute);
+app.use("/api/admin", adminRoute);
+app.use("/api", grammarRoute);
 app.post("/api/tts/sample", handleTtsSample);
 
 // Global Error Handler

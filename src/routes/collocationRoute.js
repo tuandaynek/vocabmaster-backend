@@ -1,6 +1,5 @@
 import express from "express";
 import {
-  adminImportCollocations,
   downloadCollocations,
   getCollocationReview,
   getDueCollocations,
@@ -22,7 +21,6 @@ const router = express.Router();
 router.get("/global-list", getGlobalCollocations);
 router.post("/save", requireAuth, saveCollocationsSelection);
 router.post("/download", requireAuth, downloadCollocations);
-router.post("/admin/import", requireAuth, adminImportCollocations);
 router.get("/user-list", requireAuth, getUserCollocations);
 router.get("/due-cards", requireAuth, getDueCollocations);
 router.post("/review", requireAuth, reviewCollocation);

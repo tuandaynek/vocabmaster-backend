@@ -1,6 +1,6 @@
 // services/vocab/vocabService.js
 import { supabase } from "../lib/supabase.js"; // Đã điều chỉnh path phù hợp với folder services/vocab/
-import { ensureAudioUrl } from "./audioService.js";
+import { ensureAudioUrl } from "../utils/audio.js";
 import { callGroqWithFallback } from "../lib/groq.js";
 import { buildSrsUpdatePayload, calculateNextReview } from "../utils/srs.js";
 

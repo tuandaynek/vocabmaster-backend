@@ -1,5 +1,4 @@
 import {
-  bulkInsertCollocations,
   fetchDueCollocationCards,
   fetchGlobalCollocations,
   fetchUserCollocationList,
@@ -79,23 +78,6 @@ export const saveCollocationsSelection = async (req, res) => {
 };
 
 export const downloadCollocations = saveCollocationsSelection;
-
-export const adminImportCollocations = async (req, res) => {
-  try {
-    const result = await bulkInsertCollocations(req.body?.collocationsList || []);
-    return res.status(200).json({
-      success: true,
-      message: "Collocations imported successfully",
-      ...result,
-    });
-  } catch (error) {
-    console.error("adminImportCollocations failed:", error);
-    return res.status(500).json({
-      success: false,
-      message: error.message || "Failed to import collocations",
-    });
-  }
-};
 
 export const getUserCollocations = async (req, res) => {
   const userId = getUserIdFromReq(req);
