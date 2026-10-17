@@ -1,4 +1,5 @@
 import { supabase } from "../lib/supabase.js";
+import { XP_RULES } from "../utils/xpCalculation.js";
 
 const normalizePuzzlePayload = (payload) => {
   if (
@@ -362,7 +363,7 @@ export const submitGameSessionService = async (sessionData) => {
     throw new Error(`Failed to save grammar progress: ${progressError.message}`);
   }
 
-  const xpGained = 100;
+  const xpGained = XP_RULES.LESSON_COMPLETE;
   const { error: xpError } = await supabase.rpc("log_user_activity", {
     p_user_id: userId,
     p_xp_earned: xpGained,

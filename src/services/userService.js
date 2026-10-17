@@ -1,8 +1,8 @@
 import { supabase } from "../lib/supabase.js";
+import { XP_PER_LEVEL } from "../utils/xpCalculation.js";
 
 // Helper tính toán Level & XP ngay tại Backend
 const calculateLevel = (xp = 0) => {
-  const XP_PER_LEVEL = 300;
   const level = Math.floor(xp / XP_PER_LEVEL) + 1;
   const currentLevelXp = xp % XP_PER_LEVEL;
   const nextLevelXp = XP_PER_LEVEL;
@@ -15,9 +15,8 @@ const calculateLevel = (xp = 0) => {
 };
 
 export const getUserProfileService = async (userId) => {
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const startDate = thirtyDaysAgo.toISOString().split("T")[0];
+  const now = new Date();
+  const startDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 
   const [userResponse, activityResponse] = await Promise.all([
     supabase
@@ -41,16 +40,18 @@ export const getUserProfileService = async (userId) => {
       userResponse.error?.message || "Không tìm thấy người dùng.",
     );
   }
+  if (activityResponse.error) {
+    throw new Error(
+      `Failed to fetch user activity history: ${activityResponse.error.message}`,
+    );
+  }
 
   const user = userResponse.data;
   const rawActivities = activityResponse.data || [];
 
   const activityHistory = (rawActivities || []).map((act) => ({
     date: act.activity_date, // Dạng 'YYYY-MM-DD'
-    xp: act.xp_earned || 0,
-    wordsLearned: act.words_learned || 0,
-    wordsReviewed: act.words_reviewed || 0,
-    collocationsLearned: act.collocations_learned || 0,
+    xpGained: Number(act.xp_earned) || 0,
   }));
 
   const totalXp = Number(user.total_xp) || 0;

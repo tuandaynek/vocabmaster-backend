@@ -1,5 +1,7 @@
 import { supabase } from "../lib/supabase.js";
 
+export const XP_PER_LEVEL = 100;
+
 // Bảng quy chuẩn XP thưởng cho toàn bộ ứng dụng
 export const XP_RULES = {
   COLLOCATION_REVIEW: {
@@ -10,7 +12,7 @@ export const XP_RULES = {
   FLASHCARD_LEARN: 10,
   FLASHCARD_REVIEW: 5,
   QUIZ_CORRECT: 10,
-  LESSON_COMPLETE: 30,
+  LESSON_COMPLETE: 20,
 };
 
 /**
